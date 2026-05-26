@@ -433,6 +433,20 @@ public class Qwen3AudioEncoder: Module {
             posEmbed = cached
         } else {
             let computed = createSinusoidalPositionEmbeddings(seqLen: timeAfterConv, dModel: config.dModel)
+            // Bound the cache. It's keyed by post-conv token count, which
+            // scales with input length. Left unbounded, a long run of
+            // differently-sized inputs — e.g. per-span ASR over a 1-hour
+            // diarized meeting (hundreds of distinct span lengths) —
+            // accumulates one live MLXArray per length and never evicts,
+            // climbing into the GBs until iOS jetsams the process.
+            // MLX.GPU.clearCache() cannot reclaim these: they're live
+            // references held here, not pooled scratch. Cap the map so
+            // memory stays bounded while still reusing position embeddings
+            // across a window of recent lengths (the common case where the
+            // encoder splits one input into equal-sized chunks still hits).
+            if cachedPosEmbeddings.count >= 16 {
+                cachedPosEmbeddings.removeAll(keepingCapacity: true)
+            }
             cachedPosEmbeddings[timeAfterConv] = computed
             posEmbed = computed
         }
