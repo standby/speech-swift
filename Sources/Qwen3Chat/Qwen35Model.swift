@@ -653,6 +653,54 @@ public final class Qwen35MLXModel: Module {
 
     // MARK: - Text Generation
 
+    /// Prompt tokens processed per prefill forward pass. Small enough that
+    /// each GPU command buffer stays well under Metal's watchdog timeout
+    /// even on long prompts, large enough to keep prefill throughput high.
+    public static let prefillChunkSize = 512
+
+    /// Chunked prompt prefill. Runs `promptIds` through `forward()` in
+    /// fixed-size windows instead of one pass, so each GPU command buffer
+    /// stays short — a single-pass prefill of a long prompt (e.g. a long
+    /// meeting transcript being summarized) runs long enough to trip
+    /// Metal's GPU watchdog, which kills the app. The result is
+    /// numerically identical to one `forward()` over the whole prompt.
+    ///
+    /// State is force-evaluated after each chunk so every window executes
+    /// as its own bounded command buffer instead of fusing into one giant
+    /// lazy graph. Intermediate chunks leave their LM-head logits lazy
+    /// (never computed); only the final chunk's logits are returned.
+    ///
+    /// - Returns: the final chunk's logits `[1, lastChunkLen, vocab]`, the
+    ///   accumulated state, and the index of the prompt's last token within
+    ///   those logits.
+    public func prefill(
+        promptIds: [Int],
+        state initialState: InferenceState,
+        chunkSize: Int = Qwen35MLXModel.prefillChunkSize
+    ) -> (logits: MLXArray, state: InferenceState, lastTokenPos: Int) {
+        var state = initialState
+        let chunk = max(1, chunkSize)
+        var prefillLogits = MLXArray(0)
+        var lastTokenPos = 0
+        var start = 0
+        while start < promptIds.count {
+            let end = Swift.min(start + chunk, promptIds.count)
+            let chunkIds = promptIds[start..<end].map { Int32($0) }
+            let input = MLXArray(chunkIds).expandedDimensions(axis: 0)
+            let (logits, newState) = forward(inputIds: input, state: state)
+            state = newState
+            if end == promptIds.count {
+                prefillLogits = logits
+                lastTokenPos = chunkIds.count - 1
+                eval(prefillLogits)
+            } else {
+                eval(stateArrays(state))
+            }
+            start = end
+        }
+        return (prefillLogits, state, lastTokenPos)
+    }
+
     /// Generate text tokens autoregressively.
     ///
     /// - Parameters:
@@ -661,18 +709,17 @@ public final class Qwen35MLXModel: Module {
     /// - Returns: Generated token IDs (excluding prompt)
     public func generate(
         promptIds: [Int],
-        sampling: ChatSamplingConfig = .default
+        sampling: ChatSamplingConfig = .default,
+        prefillChunkSize: Int = Qwen35MLXModel.prefillChunkSize
     ) -> [Int] {
+        guard !promptIds.isEmpty else { return [] }
         var state = InferenceState.initial(config: config)
-
-        // Prefill
-        let prompt = MLXArray(promptIds.map { Int32($0) }).expandedDimensions(axis: 0)
-        let (prefillLogits, prefillState) = forward(inputIds: prompt, state: state)
+        let (prefillLogits, prefillState, lastTokenPos) = prefill(
+            promptIds: promptIds, state: state, chunkSize: prefillChunkSize)
         state = prefillState
-        eval(prefillLogits)
 
-        // Sample first token
-        var token = sampleFromLogits(prefillLogits, at: promptIds.count - 1,
+        // Sample first token from the last position of the final chunk.
+        var token = sampleFromLogits(prefillLogits, at: lastTokenPos,
                                      config: sampling, history: promptIds)
         if token == config.eosTokenId { return [] }
 
@@ -695,6 +742,21 @@ public final class Qwen35MLXModel: Module {
     }
 
     // MARK: - Helpers
+
+    /// Flatten an inference state's live arrays so they can be force-
+    /// evaluated between prefill chunks — this keeps each chunk a bounded
+    /// GPU command buffer instead of one fused lazy graph over the whole
+    /// prompt (which is what trips the GPU watchdog on long prompts).
+    private func stateArrays(_ state: InferenceState) -> [MLXArray] {
+        var arrays: [MLXArray] = []
+        for ds in state.deltaNetStates {
+            if let ds { arrays.append(ds.s); arrays.append(ds.convState) }
+        }
+        for kv in state.kvCaches {
+            if let kv { arrays.append(kv.0); arrays.append(kv.1) }
+        }
+        return arrays
+    }
 
     private func sampleFromLogits(
         _ logits: MLXArray, at position: Int,

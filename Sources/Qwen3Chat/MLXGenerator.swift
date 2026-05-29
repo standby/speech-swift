@@ -202,12 +202,11 @@ public final class Qwen35MLXChat: @unchecked Sendable {
             config: config,
             enableThinking: false)
 
-        // Prefill
+        // Prefill (chunked — bounds each GPU command buffer so a long
+        // prompt doesn't trip Metal's watchdog; see Qwen35MLXModel.prefill).
         let prefillStart = CFAbsoluteTimeGetCurrent()
-        let promptArray = MLXArray(promptTokens.map { Int32($0) })
-            .expandedDimensions(axis: 0)
-        let (prefillLogits, prefillState) = model.forward(inputIds: promptArray, state: state)
-        eval(prefillLogits)
+        let (prefillLogits, prefillState, _) = model.prefill(
+            promptIds: promptTokens, state: state)
         state = prefillState
 
         let prefillMs = (CFAbsoluteTimeGetCurrent() - prefillStart) * 1000
@@ -305,11 +304,9 @@ public final class Qwen35MLXChat: @unchecked Sendable {
                         config: self.config,
                         enableThinking: false)
 
-                    let promptArray = MLXArray(promptTokens.map { Int32($0) })
-                        .expandedDimensions(axis: 0)
-                    let (prefillLogits, prefillState) = self.model.forward(
-                        inputIds: promptArray, state: self.state)
-                    eval(prefillLogits)
+                    // Chunked prefill — see Qwen35MLXModel.prefill.
+                    let (prefillLogits, prefillState, _) = self.model.prefill(
+                        promptIds: promptTokens, state: self.state)
                     self.state = prefillState
 
                     var logits = self.extractLastPositionLogits(prefillLogits)
