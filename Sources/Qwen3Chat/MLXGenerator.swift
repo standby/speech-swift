@@ -182,6 +182,14 @@ public final class Qwen35MLXChat: @unchecked Sendable {
     public func resetState() {
         state = .initial(config: config)
         metrics = Metrics()
+        // Bound MLX's buffer pool and flush it between generations. Without
+        // this the pool grows unbounded across calls — e.g. map-reduce
+        // summarization of a long transcript runs ~20+ sequential
+        // generations and climbed past the jetsam limit (~3.4 GB) on device.
+        // cacheLimit caps the pool of freed-but-retained scratch; clearCache
+        // releases it now. Neither touches loaded model weights.
+        MLX.Memory.cacheLimit = 256 * 1024 * 1024
+        MLX.Memory.clearCache()
     }
 
     // MARK: - Generation
