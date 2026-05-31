@@ -320,6 +320,7 @@ public final class Qwen35MLXChat: @unchecked Sendable {
                     var logits = self.extractLastPositionLogits(prefillLogits)
                     var generatedTokens: [Int] = []
                     var inThinking = false
+                    var yieldedAnyText = false
 
                     for _ in 0..<sampling.maxTokens {
                         let nextToken = ChatSampler.sample(
@@ -340,6 +341,7 @@ public final class Qwen35MLXChat: @unchecked Sendable {
                                   let text = self.tokenizer.decodeToken(nextToken),
                                   !self.tokenizer.isSpecialToken(nextToken) {
                             continuation.yield(text)
+                            yieldedAnyText = true
                         }
 
                         let tokenArr = MLXArray([Int32(nextToken)])
@@ -349,6 +351,19 @@ public final class Qwen35MLXChat: @unchecked Sendable {
                         eval(stepLogits)
                         self.state = newState
                         logits = self.extractLastPositionLogits(stepLogits)
+                    }
+
+                    // Safety net: if the model produced tokens but everything
+                    // was trapped inside a `<think>` block that never closed
+                    // within the token budget, nothing was yielded and the
+                    // caller sees an empty response. Recover the real content by
+                    // stripping the thinking block after the fact (same as the
+                    // non-streaming `generate`) and emitting what's left.
+                    if !yieldedAnyText && !generatedTokens.isEmpty {
+                        let recovered = self.tokenizer.decode(
+                            ChatTemplate.stripThinking(from: generatedTokens))
+                        let trimmed = recovered.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty { continuation.yield(recovered) }
                     }
 
                     continuation.finish()
