@@ -615,9 +615,17 @@ public final class Qwen35MLXModel: Module {
     ///   - inputIds: Token IDs [B, T]
     ///   - state: Inference state
     /// - Returns: (logits [B, T, vocabSize], updated state)
+    /// - Parameter lastPositionOnly: when true, slice the final hidden state
+    ///   to the last position BEFORE the (vocab-sized) tied LM head, so only
+    ///   one row is projected to logits. During prefill only the last
+    ///   position's logits are ever sampled, so materializing logits for the
+    ///   whole chunk (`[1, T, vocab]`, ~hundreds of MB at T=512) is pure
+    ///   transient waste. Per-position LM-head rows are independent, so this
+    ///   is numerically identical to slicing the logits after the projection.
     public func forward(
         inputIds: MLXArray,
-        state: InferenceState
+        state: InferenceState,
+        lastPositionOnly: Bool = false
     ) -> (MLXArray, InferenceState) {
         let seqLen = inputIds.dim(1)
         var hidden = embedTokens(inputIds)  // [B, T, hiddenSize]
@@ -639,6 +647,13 @@ public final class Qwen35MLXModel: Module {
         }
 
         hidden = norm(hidden)
+
+        // Slice to the last position before the vocab projection when only
+        // that row will be consumed (prefill) — avoids a [1, T, vocab]
+        // transient over the whole chunk.
+        if lastPositionOnly {
+            hidden = hidden[0..., (seqLen - 1)..., 0...]  // [B, 1, hiddenSize]
+        }
 
         // Tied LM head
         let logits = embedTokens.asLinear(hidden)
@@ -668,11 +683,12 @@ public final class Qwen35MLXModel: Module {
     /// State is force-evaluated after each chunk so every window executes
     /// as its own bounded command buffer instead of fusing into one giant
     /// lazy graph. Intermediate chunks leave their LM-head logits lazy
-    /// (never computed); only the final chunk's logits are returned.
+    /// (never computed); the final chunk projects only its last position
+    /// through the LM head (`lastPositionOnly`), so the returned logits are
+    /// a single row rather than the whole chunk.
     ///
-    /// - Returns: the final chunk's logits `[1, lastChunkLen, vocab]`, the
-    ///   accumulated state, and the index of the prompt's last token within
-    ///   those logits.
+    /// - Returns: the final chunk's last-position logits `[1, 1, vocab]`, the
+    ///   accumulated state, and `lastTokenPos = 0` (the only row present).
     public func prefill(
         promptIds: [Int],
         state initialState: InferenceState,
@@ -687,11 +703,15 @@ public final class Qwen35MLXModel: Module {
             let end = Swift.min(start + chunk, promptIds.count)
             let chunkIds = promptIds[start..<end].map { Int32($0) }
             let input = MLXArray(chunkIds).expandedDimensions(axis: 0)
-            let (logits, newState) = forward(inputIds: input, state: state)
+            let isFinal = (end == promptIds.count)
+            // Only the final chunk's last-token logits are sampled; ask the
+            // model to project just that row so the LM head doesn't build a
+            // full [1, chunkLen, vocab] transient on the final chunk.
+            let (logits, newState) = forward(inputIds: input, state: state, lastPositionOnly: isFinal)
             state = newState
-            if end == promptIds.count {
-                prefillLogits = logits
-                lastTokenPos = chunkIds.count - 1
+            if isFinal {
+                prefillLogits = logits      // [1, 1, vocab]
+                lastTokenPos = 0            // last (and only) row in the sliced logits
                 eval(prefillLogits)
             } else {
                 eval(stateArrays(state))
