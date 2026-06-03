@@ -60,6 +60,18 @@ public struct Qwen3ASRTokens: Sendable {
     public static let imStartTokenId = 151644      // <|im_start|>
     public static let imEndTokenId = 151645        // <|im_end|>
     public static let timestampTokenId = 151705    // <|timestamp|>
+
+    /// Tokens that end a transcript and must stop the autoregressive decode.
+    /// The decode loop MUST break on any of these. The 1.7B model's
+    /// generation_config declares `eos_token_id: [151643, 151645]` and often
+    /// terminates with `<|endoftext|>` (151643); the 0.6B only ever uses
+    /// `<|im_end|>` (151645). Breaking on just one made 1.7B run the full
+    /// maxTokens every call (a slow "never finalizes" hang on-device), while
+    /// 0.6B looked fine. Including both is correct for every shipped variant.
+    public static let stopTokenIds: Set<Int32> = [
+        Int32(eosTokenId),   // <|im_end|> 151645
+        Int32(padTokenId),   // <|endoftext|> 151643
+    ]
 }
 
 /// Main Qwen3-ASR model for speech recognition.
@@ -339,8 +351,6 @@ public class Qwen3ASRModel {
         // step 1's graph will read from).
         asyncEval(nextTokenArr, cache)
 
-        let eosToken = Int32(Qwen3ASRTokens.eosTokenId)
-
         for step in 0..<maxTokens {
             // Stage N+1's graph BEFORE syncing N. embedTokens expects a
             // [batch, seq] int32 tensor; nextTokenArr is 0-D so we expand
@@ -376,7 +386,7 @@ public class Qwen3ASRModel {
             // into `generatedTokens` whenever EOS was the most recent
             // pick, so greedy stays bit-identical.
             generatedTokens.append(nextToken)
-            if nextToken == eosToken { break }
+            if Qwen3ASRTokens.stopTokenIds.contains(nextToken) { break }
 
             guard let advancedCache = cacheN1, let advancedToken = nextTokenArrN1 else {
                 // Final iteration without speculative work — nothing to
@@ -412,7 +422,7 @@ public class Qwen3ASRModel {
         generatedTokens.append(nextToken)
 
         for _ in 1..<maxTokens {
-            if nextToken == Int32(Qwen3ASRTokens.eosTokenId) { break }
+            if Qwen3ASRTokens.stopTokenIds.contains(nextToken) { break }
 
             let tokenEmbeds = textDecoder.embedTokens(
                 MLXArray([nextToken]).expandedDimensions(axis: 0)

@@ -8,6 +8,17 @@ import Metal
 
 final class Qwen3ASRTests: XCTestCase {
 
+    /// Regression: the autoregressive decode loop must stop on BOTH
+    /// `<|im_end|>` (151645) and `<|endoftext|>` (151643). The 1.7B model's
+    /// generation_config declares `eos_token_id: [151643, 151645]` and often
+    /// ends with 151643; stopping on only 151645 made 1.7B run the full
+    /// maxTokens every call (an on-device "never finalizes" hang), while the
+    /// 0.6B (which only emits 151645) looked fine.
+    func testStopTokensIncludeBothEndIds() {
+        XCTAssertTrue(Qwen3ASRTokens.stopTokenIds.contains(151645), "<|im_end|> must stop decode")
+        XCTAssertTrue(Qwen3ASRTokens.stopTokenIds.contains(151643), "<|endoftext|> must stop decode (1.7B EOS)")
+    }
+
     func testAudioEncoderConfig() {
         let config = Qwen3AudioEncoderConfig.default
         XCTAssertEqual(config.dModel, 896)
