@@ -1,5 +1,11 @@
 #if canImport(AVFoundation)
 import AVFoundation
+#if canImport(CoreAudio)
+// On Mac Catalyst, AVFoundation does not transitively expose the CoreAudio
+// Swift overlay (UnsafeMutableAudioBufferListPointer), so it is imported
+// explicitly. Harmless on iOS, where AVFoundation already re-exports it.
+import CoreAudio
+#endif
 import os
 
 /// Lock-free SPSC ring buffer for audio samples.
