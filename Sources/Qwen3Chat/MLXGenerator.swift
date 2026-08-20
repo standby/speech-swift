@@ -76,9 +76,12 @@ public final class Qwen35MLXChat: @unchecked Sendable {
 
     // MARK: - Factory
 
-    /// Quantization variant.
+    /// Quantization variant. The raw value is the repo subdirectory the
+    /// weights live in, and the bit width is read from that directory's
+    /// `config.json` — see `Qwen3ChatConfig.bits`.
     public enum Quantization: String {
         case int4
+        case int5
         case int8
     }
 
@@ -88,12 +91,13 @@ public final class Qwen35MLXChat: @unchecked Sendable {
     /// Model is loaded into MLX for GPU inference on Apple Silicon.
     ///
     /// - Parameters:
-    ///   - modelId: HuggingFace model ID (repo with int4/ and int8/ subdirs)
-    ///   - quantization: INT4 (404 MB) or INT8 (763 MB)
+    ///   - modelId: HuggingFace model ID (repo with per-variant subdirs)
+    ///   - quantization: INT5 (518 MB) or INT8 (800 MB). INT4 was retired
+    ///     upstream on 2026-07-30 and 404s on `aufklarer/Qwen3.5-0.8B-Chat-MLX`.
     ///   - progressHandler: Optional callback for download/load progress
     public static func fromPretrained(
         modelId: String = defaultModelId,
-        quantization: Quantization = .int4,
+        quantization: Quantization = .int5,
         cacheDir: URL? = nil,
         offlineMode: Bool = false,
         progressHandler: ((Double, String) -> Void)? = nil

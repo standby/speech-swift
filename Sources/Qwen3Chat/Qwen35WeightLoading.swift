@@ -140,7 +140,7 @@ public enum Qwen35WeightLoader {
 
     /// Apply weights to a DeltaNet (linear attention) layer.
     ///
-    /// All DeltaNet projections are quantized INT4 (matching mlx-community format).
+    /// All DeltaNet projections are quantized (matching mlx-community format).
     /// The conv1d weight and scalar parameters (dt_bias, A_log) are loaded directly.
     private static func applyDeltaNetWeights(
         to layer: DeltaNetLayer,
@@ -187,7 +187,7 @@ public enum Qwen35WeightLoader {
 
     /// Apply weights to a GatedAttention (full attention) layer.
     ///
-    /// All projections are quantized (INT4 with group_size=64).
+    /// All projections are quantized at the config's bit width and group size.
     private static func applyGatedAttentionWeights(
         to layer: GatedAttentionLayer,
         prefix: String,

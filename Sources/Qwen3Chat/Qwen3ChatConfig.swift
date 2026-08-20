@@ -21,6 +21,11 @@ public struct Qwen3ChatConfig: Codable, Sendable {
     public let eosTokenId: Int
     public let padTokenId: Int
     public let quantization: String
+    /// Bits per weight for the quantized projections. Absent in pre-INT5
+    /// checkpoints, which were all 4-bit — see `bits`.
+    public let quantizationBits: Int?
+    /// Group size for the quantized projections. Absent in older checkpoints.
+    public let quantizationGroupSize: Int?
 
     // Qwen3.5-specific fields
     public let modelType: ChatModelArch?
@@ -54,6 +59,8 @@ public struct Qwen3ChatConfig: Codable, Sendable {
         case eosTokenId = "eos_token_id"
         case padTokenId = "pad_token_id"
         case quantization
+        case quantizationBits = "quantization_bits"
+        case quantizationGroupSize = "quantization_group_size"
         case modelType = "model_type"
         case layerTypes = "layer_types"
         case fullAttentionInterval = "full_attention_interval"
@@ -65,6 +72,19 @@ public struct Qwen3ChatConfig: Codable, Sendable {
         case partialRotaryFactor = "partial_rotary_factor"
         case tieWordEmbeddings = "tie_word_embeddings"
     }
+
+    /// Bits per weight for every `QuantizedLinear` in the model.
+    ///
+    /// The quantized modules must be built with the same bit width the
+    /// checkpoint was packed at — `Module.update(parameters:)` swaps the
+    /// arrays in without validating their shape, so a mismatch here loads
+    /// silently and then produces garbage at inference time rather than
+    /// throwing. Defaults to 4 for checkpoints written before
+    /// `quantization_bits` existed, which were all INT4.
+    public var bits: Int { quantizationBits ?? 4 }
+
+    /// Group size for every `QuantizedLinear` in the model. See `bits`.
+    public var groupSize: Int { quantizationGroupSize ?? 64 }
 
     /// Whether this is a Qwen3.5 hybrid model.
     public var isQwen35: Bool {
@@ -92,6 +112,8 @@ public struct Qwen3ChatConfig: Codable, Sendable {
         eosTokenId: 248046,  // <|im_end|> — stops generation at end of assistant turn
         padTokenId: 248044,  // <|endoftext|>
         quantization: "int4",
+        quantizationBits: 4,
+        quantizationGroupSize: 64,
         modelType: .qwen35,
         layerTypes: [
             "linear_attention", "linear_attention", "linear_attention", "full_attention",

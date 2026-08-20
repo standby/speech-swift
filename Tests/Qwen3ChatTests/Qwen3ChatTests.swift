@@ -782,3 +782,75 @@ final class Qwen3ChatMemoryTests: XCTestCase {
         let _: any AudioCommon.ModelMemoryManageable.Type = Qwen35MLXChat.self
     }
 }
+
+// MARK: - Quantization Bit-Width Tests
+
+/// Regression tests for the INT4 retirement (2026-07-30).
+///
+/// `Qwen35Model` used to hardcode `bits = 4` in every `QuantizedLinear`, so a
+/// non-INT4 checkpoint loaded silently — `Module.update(parameters:)` swaps
+/// arrays in without validating shape — and then produced garbage at
+/// inference. Bit width and group size now come from the variant's
+/// `config.json`.
+final class Qwen3ChatQuantizationConfigTests: XCTestCase {
+
+    /// Trimmed to the fields the decoder needs; mirrors the real
+    /// `int5/config.json` in aufklarer/Qwen3.5-0.8B-Chat-MLX.
+    private func configJSON(quantization: String, bits: Int?, groupSize: Int?) -> Data {
+        var fields: [String] = [
+            "\"hidden_size\": 1024",
+            "\"num_hidden_layers\": 24",
+            "\"num_attention_heads\": 8",
+            "\"num_key_value_heads\": 2",
+            "\"head_dim\": 256",
+            "\"intermediate_size\": 3584",
+            "\"vocab_size\": 248320",
+            "\"max_seq_len\": 2048",
+            "\"rope_theta\": 10000000",
+            "\"rms_norm_eps\": 1e-06",
+            "\"eos_token_id\": 248046",
+            "\"pad_token_id\": 248044",
+            "\"model_type\": \"qwen3_5_text\"",
+            "\"quantization\": \"\(quantization)\"",
+        ]
+        if let bits { fields.append("\"quantization_bits\": \(bits)") }
+        if let groupSize { fields.append("\"quantization_group_size\": \(groupSize)") }
+        return Data("{\(fields.joined(separator: ","))}".utf8)
+    }
+
+    func testInt5ConfigReportsFiveBits() throws {
+        let config = try JSONDecoder().decode(
+            Qwen3ChatConfig.self,
+            from: configJSON(quantization: "int5", bits: 5, groupSize: 64))
+        XCTAssertEqual(config.bits, 5, "INT5 checkpoint must build 5-bit QuantizedLinear layers")
+        XCTAssertEqual(config.groupSize, 64)
+    }
+
+    func testInt8ConfigReportsEightBits() throws {
+        let config = try JSONDecoder().decode(
+            Qwen3ChatConfig.self,
+            from: configJSON(quantization: "int8", bits: 8, groupSize: 64))
+        XCTAssertEqual(config.bits, 8)
+        XCTAssertEqual(config.groupSize, 64)
+    }
+
+    /// Checkpoints published before `quantization_bits` existed were all INT4.
+    func testLegacyConfigWithoutBitsDefaultsToInt4() throws {
+        let config = try JSONDecoder().decode(
+            Qwen3ChatConfig.self,
+            from: configJSON(quantization: "int4", bits: nil, groupSize: nil))
+        XCTAssertEqual(config.bits, 4)
+        XCTAssertEqual(config.groupSize, 64)
+    }
+
+    func testBundledDefaultConfigIsInt4() {
+        XCTAssertEqual(Qwen3ChatConfig.qwen35_08B.bits, 4)
+        XCTAssertEqual(Qwen3ChatConfig.qwen35_08B.groupSize, 64)
+    }
+
+    /// The variant raw value is the repo subdirectory that gets downloaded.
+    func testQuantizationRawValuesMatchRepoLayout() {
+        XCTAssertEqual(Qwen35MLXChat.Quantization.int5.rawValue, "int5")
+        XCTAssertEqual(Qwen35MLXChat.Quantization.int8.rawValue, "int8")
+    }
+}
