@@ -78,6 +78,13 @@ public struct Qwen3ASRTokens: Sendable {
 ///
 /// - Warning: This class is not thread-safe. Create separate instances for concurrent use.
 public class Qwen3ASRModel {
+    /// Checked before every decode step; returning `true` stops decoding
+    /// early with the tokens produced so far. iOS refuses GPU work from a
+    /// backgrounded app and MLX aborts the process when a Metal command
+    /// buffer fails, so a host app sets this to stop within one token of
+    /// resigning active. A truncated result must be discarded by the caller.
+    nonisolated(unsafe) public static var shouldInterruptDecoding: (@Sendable () -> Bool)?
+
     public let audioEncoder: Qwen3AudioEncoder
     public let featureExtractor: WhisperFeatureExtractor
     public var textDecoder: QuantizedTextModel?
@@ -352,6 +359,7 @@ public class Qwen3ASRModel {
         asyncEval(nextTokenArr, cache)
 
         for step in 0..<maxTokens {
+            if shouldInterruptDecoding?() == true { break }
             // Stage N+1's graph BEFORE syncing N. embedTokens expects a
             // [batch, seq] int32 tensor; nextTokenArr is 0-D so we expand
             // twice to [1, 1].
